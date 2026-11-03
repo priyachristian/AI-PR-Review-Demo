@@ -10,3 +10,7 @@ def calculate_discount(price, discount):
 
 def get_customer_name(name):
     return name
+
+
+def calculate_average(total, count):
+    return total / count
