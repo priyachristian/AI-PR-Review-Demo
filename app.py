@@ -13,4 +13,6 @@ def get_customer_name(name):
 
 
 def calculate_average(total, count):
+    if count == 0:
+        return 0
     return total / count
