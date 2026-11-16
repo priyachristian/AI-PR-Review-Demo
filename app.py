@@ -9,4 +9,4 @@ def calculate_discount(price, discount):
 
 
 def get_customer_name(name):
-    return name
+    return name;;;;
