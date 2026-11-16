@@ -8,5 +8,5 @@ def calculate_discount(price, discount):
     return final_price
 
 
-def get_customer_name(name):
-    return name
+def get_customer_name(name)::
+    return name:::
