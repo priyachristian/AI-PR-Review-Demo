@@ -1,12 +1,12 @@
-def calculate_total(price, quantity):
-    total = price * quantity
+def calculate_salary(basic_salary, bonus):
+    total = basic_salary + bonus
     return total
 
 
-def calculate_discount(price, discount):
-    final_price = price - discount
-    return final_price
+def get_employee(employee_id):
+    query = f"SELECT * FROM employees WHERE id = {employee_id}"
+    return query
 
 
-def get_customer_name(name):
-    return name
+def divide_salary(salary, employees):
+    return salary / employees
