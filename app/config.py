@@ -1,20 +1,31 @@
 from decimal import Decimal
-from typing import Optional
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    """Application configuration loaded from environment variables."""
+    """Application configuration loaded from environment variables and .env."""
 
     API_TITLE: str = "Employee Management API"
     API_VERSION: str = "1.0.0"
     DATABASE_URL: str = "sqlite:///./employees.db"
 
-    # Security & Authentication Configuration
-    # Defaults provided for development/testing; must be overridden via environment in production
-    SECRET_KEY: str = "dev-secret-key-must-be-changed-in-production-min-32-chars"
-    API_KEY: str = "demo-employee-key-abc456"
-    ADMIN_API_KEY: str = "demo-admin-key-xyz123"
+    # Security & Authentication Configuration - required, minimum 32 chars, no committed defaults
+    SECRET_KEY: str = Field(
+        ...,
+        min_length=32,
+        description="Cryptographic secret key for JWT token signing (required, min 32 chars)",
+    )
+    API_KEY: str = Field(
+        ...,
+        min_length=32,
+        description="Static API key for standard employee access (required, min 32 chars)",
+    )
+    ADMIN_API_KEY: str = Field(
+        ...,
+        min_length=32,
+        description="Static API key for administrative access (required, min 32 chars)",
+    )
     TOKEN_ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60
 

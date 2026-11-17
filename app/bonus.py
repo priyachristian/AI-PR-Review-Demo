@@ -1,17 +1,15 @@
 from decimal import Decimal, ROUND_HALF_UP
-from typing import Any, Union
-from fastapi.params import Param
+from typing import Any, Optional, Union
+from fastapi import HTTPException, status
 
-Number = Union[Decimal, int, float, str, Any]
+from app import schemas
+
+Number = Union[Decimal, int, float, str]
 
 
 def to_decimal(val: Number) -> Decimal:
-    """Safely convert any numeric representation to Decimal."""
-    if isinstance(val, Decimal):
-        return val
-    if isinstance(val, Param):
-        val = val.default
-    return Decimal(str(val))
+    """Safely convert any numeric representation to Decimal without framework dependencies."""
+    return val if isinstance(val, Decimal) else Decimal(str(val))
 
 
 def round_currency(amount: Decimal) -> Decimal:
@@ -22,7 +20,7 @@ def round_currency(amount: Decimal) -> Decimal:
 def calculate_bonus(salary: Number, bonus_percentage: Number = Decimal("10.0")) -> Decimal:
     """
     Calculate bonus given base salary and percentage (0-100).
-    Uses proper decimal handling and validation.
+    Framework-free pure calculation function.
     """
     salary_dec = to_decimal(salary)
     pct_dec = to_decimal(bonus_percentage)
@@ -89,3 +87,42 @@ def calculate_total(price: Number, quantity: int) -> Decimal:
         raise ValueError("Quantity must be a non-negative integer.")
 
     return round_currency(price_dec * Decimal(quantity))
+
+
+def calculate_employee_bonus(
+    employee: Any,
+    bonus_percentage: Optional[Decimal] = None,
+    default_percentage: Decimal = Decimal("10.0"),
+) -> schemas.BonusResponse:
+    """
+    Single canonical service function to calculate employee bonus.
+    Consolidates bonus logic to prevent duplication across handlers.
+    """
+    if employee.salary is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Employee with ID {employee.id} does not have a base salary configured.",
+        )
+
+    pct = bonus_percentage if bonus_percentage is not None else default_percentage
+    try:
+        bonus_val = calculate_bonus(salary=employee.salary, bonus_percentage=pct)
+        total_comp = calculate_salary(basic_salary=employee.salary, bonus=bonus_val)
+    except ValueError as ve:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(ve),
+        )
+
+    return schemas.BonusResponse(
+        employee_id=employee.id,
+        company_id=getattr(employee, "company_id", 1),
+        first_name=employee.first_name,
+        last_name=employee.last_name,
+        department=employee.department,
+        role=employee.role,
+        salary=employee.salary,
+        bonus_percentage=pct,
+        bonus=bonus_val,
+        total_compensation=total_comp,
+    )

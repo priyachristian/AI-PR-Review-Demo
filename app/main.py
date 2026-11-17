@@ -19,7 +19,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title=settings.API_TITLE,
-    description="Clean, production-ready, secure FastAPI service for Employee Management and AI PR Review validation.",
+    description="Clean, production-ready, secure FastAPI service with tenant scoping and RBAC authorization.",
     version=settings.API_VERSION,
     lifespan=lifespan,
 )
@@ -48,12 +48,12 @@ def health_check():
     "/bonus/{employee_id}",
     response_model=schemas.BonusResponse,
     tags=["Employees"],
-    summary="Root bonus endpoint delegating to employee bonus calculation",
+    summary="Convenience alias for /api/v1/employees/{employee_id}/bonus",
 )
 def root_calculate_bonus(
     employee_id: int = Path(..., ge=1, description="Employee ID (positive integer)"),
     bonus_percentage: Optional[Decimal] = Query(
-        default=settings.DEFAULT_BONUS_PERCENTAGE,
+        default=None,
         ge=0,
         le=settings.MAX_BONUS_PERCENTAGE,
         description="Bonus percentage (0 to 100)",
@@ -61,7 +61,7 @@ def root_calculate_bonus(
     db: Session = Depends(get_db),
     current_user: security.User = Depends(security.require_authenticated),
 ):
-    """Convenience alias for /api/v1/employees/{employee_id}/bonus."""
+    """Direct alias to employee bonus calculation service."""
     return employees.get_employee_bonus(
         employee_id=employee_id,
         bonus_percentage=bonus_percentage,

@@ -1,5 +1,5 @@
 from datetime import datetime, timezone
-from sqlalchemy import Boolean, Column, DateTime, Integer, Numeric, String
+from sqlalchemy import Boolean, Column, DateTime, Integer, Numeric, String, UniqueConstraint
 from app.database import Base
 
 
@@ -11,9 +11,10 @@ class Employee(Base):
     __tablename__ = "employees"
 
     id = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    company_id = Column(Integer, nullable=False, index=True, default=1)
     first_name = Column(String(50), nullable=False)
     last_name = Column(String(50), nullable=False)
-    email = Column(String(120), unique=True, index=True, nullable=False)
+    email = Column(String(120), index=True, nullable=False)
     department = Column(String(100), nullable=False, default="Engineering")
     role = Column(String(100), nullable=False, default="Software Engineer")
     salary = Column(Numeric(12, 2, asdecimal=True), nullable=True)
@@ -24,4 +25,8 @@ class Employee(Base):
         default=get_utc_now,
         onupdate=get_utc_now,
         nullable=False,
+    )
+
+    __table_args__ = (
+        UniqueConstraint("company_id", "email", name="uq_company_employee_email"),
     )

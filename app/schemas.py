@@ -42,6 +42,7 @@ class EmployeeBase(BaseModel):
         default=None,
         ge=0,
         le=100_000_000,
+        decimal_places=2,
         description="Annual base compensation in USD",
         examples=[Decimal("95000.00")],
     )
@@ -50,6 +51,13 @@ class EmployeeBase(BaseModel):
         description="Active employment status",
         examples=[True],
     )
+
+    @field_validator("email", mode="before")
+    @classmethod
+    def normalize_email(cls, value: str) -> str:
+        if isinstance(value, str):
+            return value.strip().lower()
+        return value
 
     @field_validator("first_name", "last_name", "department", "role", mode="before")
     @classmethod
@@ -72,8 +80,15 @@ class EmployeeUpdate(BaseModel):
     email: Optional[EmailStr] = Field(default=None)
     department: Optional[str] = Field(default=None, min_length=1, max_length=100)
     role: Optional[str] = Field(default=None, min_length=1, max_length=100)
-    salary: Optional[Decimal] = Field(default=None, ge=0, le=100_000_000)
+    salary: Optional[Decimal] = Field(default=None, ge=0, le=100_000_000, decimal_places=2)
     is_active: Optional[bool] = Field(default=None)
+
+    @field_validator("email", mode="before")
+    @classmethod
+    def normalize_email(cls, value: Optional[str]) -> Optional[str]:
+        if value is not None and isinstance(value, str):
+            return value.strip().lower()
+        return value
 
     @field_validator("first_name", "last_name", "department", "role", mode="before")
     @classmethod
@@ -88,6 +103,7 @@ class EmployeeUpdate(BaseModel):
 
 class EmployeeResponse(EmployeeBase):
     id: int
+    company_id: int
     created_at: datetime
     updated_at: datetime
 
@@ -96,6 +112,7 @@ class EmployeeResponse(EmployeeBase):
 
 class BonusResponse(BaseModel):
     employee_id: int = Field(..., description="Employee ID")
+    company_id: int = Field(..., description="Tenant / Company ID")
     first_name: str = Field(..., description="First name")
     last_name: str = Field(..., description="Last name")
     department: str = Field(..., description="Department")

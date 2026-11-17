@@ -1,11 +1,10 @@
 from decimal import Decimal
-from typing import List, Optional
+from typing import Any, List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, status
-from fastapi.params import Param
 from sqlalchemy.orm import Session
 
 from app import crud, schemas, security
-from app.bonus import calculate_bonus, calculate_salary
+from app.bonus import calculate_employee_bonus
 from app.config import settings
 from app.database import get_db
 
@@ -13,6 +12,13 @@ router = APIRouter(
     prefix="/employees",
     tags=["Employees"],
 )
+
+
+def _unwrap(val: Any, default: Any = None) -> Any:
+    """Helper to unwrap FastAPI parameter defaults when endpoints are called directly in tests."""
+    if hasattr(val, "default"):
+        return default if val.default is ... else val.default
+    return val
 
 
 @router.post(
@@ -26,21 +32,14 @@ def create_employee(
     db: Session = Depends(get_db),
     current_user: security.User = Depends(security.require_admin),
 ):
-    """Register a new employee. Requires Admin authorization."""
-    user = security.resolve_user(current_user)
-    if user.role != security.UserRole.ADMIN:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Admin authorization required to create employee records.",
-        )
-
-    existing = crud.get_employee_by_email(db, email=employee.email)
+    """Register a new employee scoped to the tenant organization. Requires Admin authorization."""
+    existing = crud.get_employee_by_email(db, email=employee.email, company_id=current_user.company_id)
     if existing:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"An employee with email '{employee.email}' already exists.",
         )
-    return crud.create_employee(db=db, employee=employee)
+    return crud.create_employee(db=db, employee=employee, company_id=current_user.company_id)
 
 
 @router.get(
@@ -56,19 +55,14 @@ def list_employees(
     db: Session = Depends(get_db),
     current_user: security.User = Depends(security.require_authenticated),
 ):
-    """Retrieve a list of employees with optional pagination and filtering."""
-    security.resolve_user(current_user)
-    skip_val = skip.default if isinstance(skip, Param) else skip
-    limit_val = limit.default if isinstance(limit, Param) else limit
-    department_val = department.default if isinstance(department, Param) else department
-    is_active_val = is_active.default if isinstance(is_active, Param) else is_active
-
+    """Retrieve employees scoped to the authenticated tenant organization."""
     return crud.get_employees(
         db=db,
-        skip=skip_val,
-        limit=limit_val,
-        department=department_val,
-        is_active=is_active_val,
+        company_id=current_user.company_id,
+        skip=_unwrap(skip, 0),
+        limit=_unwrap(limit, 100),
+        department=_unwrap(department, None),
+        is_active=_unwrap(is_active, None),
     )
 
 
@@ -82,11 +76,10 @@ def get_employee(
     db: Session = Depends(get_db),
     current_user: security.User = Depends(security.require_authenticated),
 ):
-    """Fetch details of a single employee by their ID."""
-    user = security.resolve_user(current_user)
-    security.verify_employee_access(employee_id=employee_id, current_user=user)
+    """Fetch details of an employee scoped to tenant organization."""
+    security.verify_employee_access(employee_id=employee_id, current_user=current_user)
 
-    employee = crud.get_employee(db=db, employee_id=employee_id)
+    employee = crud.get_employee(db=db, employee_id=employee_id, company_id=current_user.company_id)
     if not employee:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -103,7 +96,7 @@ def get_employee(
 def get_employee_bonus(
     employee_id: int = Path(..., ge=1, description="Employee ID (positive integer)"),
     bonus_percentage: Optional[Decimal] = Query(
-        default=settings.DEFAULT_BONUS_PERCENTAGE,
+        default=None,
         ge=0,
         le=settings.MAX_BONUS_PERCENTAGE,
         description="Bonus percentage (0 to 100)",
@@ -112,48 +105,23 @@ def get_employee_bonus(
     current_user: security.User = Depends(security.require_authenticated),
 ):
     """
-    Calculate bonus and total compensation for an employee based on their base salary.
-    Sensitive compensation data protected by authentication & authorization.
+    Calculate bonus and total compensation for an employee based on base salary.
+    Scoped by tenant (company_id) and role/owner authorization to prevent IDOR.
     """
-    user = security.resolve_user(current_user)
-    security.verify_employee_access(employee_id=employee_id, current_user=user)
+    security.verify_employee_access(employee_id=employee_id, current_user=current_user)
 
-    employee = crud.get_employee(db=db, employee_id=employee_id)
+    employee = crud.get_employee(db=db, employee_id=employee_id, company_id=current_user.company_id)
     if not employee:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Employee with ID {employee_id} not found.",
         )
 
-    if employee.salary is None:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Employee with ID {employee_id} does not have a base salary configured.",
-        )
-
-    if isinstance(bonus_percentage, Param) or bonus_percentage is None:
-        pct = settings.DEFAULT_BONUS_PERCENTAGE
-    else:
-        pct = bonus_percentage
-    try:
-        bonus_val = calculate_bonus(salary=employee.salary, bonus_percentage=pct)
-        total_comp = calculate_salary(basic_salary=employee.salary, bonus=bonus_val)
-    except ValueError as ve:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=str(ve),
-        )
-
-    return schemas.BonusResponse(
-        employee_id=employee.id,
-        first_name=employee.first_name,
-        last_name=employee.last_name,
-        department=employee.department,
-        role=employee.role,
-        salary=employee.salary,
+    pct = _unwrap(bonus_percentage, None)
+    return calculate_employee_bonus(
+        employee=employee,
         bonus_percentage=pct,
-        bonus=bonus_val,
-        total_compensation=total_comp,
+        default_percentage=settings.DEFAULT_BONUS_PERCENTAGE,
     )
 
 
@@ -168,15 +136,8 @@ def update_employee(
     db: Session = Depends(get_db),
     current_user: security.User = Depends(security.require_admin),
 ):
-    """Update fields of an existing employee. Requires Admin authorization."""
-    user = security.resolve_user(current_user)
-    if user.role != security.UserRole.ADMIN:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Admin authorization required to update employee records.",
-        )
-
-    employee = crud.get_employee(db=db, employee_id=employee_id)
+    """Update fields of an employee within the tenant organization. Requires Admin authorization."""
+    employee = crud.get_employee(db=db, employee_id=employee_id, company_id=current_user.company_id)
     if not employee:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -184,7 +145,11 @@ def update_employee(
         )
 
     if employee_update.email and employee_update.email.strip().lower() != employee.email.lower():
-        conflict = crud.get_employee_by_email(db, email=employee_update.email)
+        conflict = crud.get_employee_by_email(
+            db,
+            email=employee_update.email,
+            company_id=current_user.company_id,
+        )
         if conflict:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
@@ -208,15 +173,8 @@ def delete_employee(
     db: Session = Depends(get_db),
     current_user: security.User = Depends(security.require_admin),
 ):
-    """Delete an employee by their ID. Requires Admin authorization."""
-    user = security.resolve_user(current_user)
-    if user.role != security.UserRole.ADMIN:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Admin authorization required to delete employee records.",
-        )
-
-    employee = crud.get_employee(db=db, employee_id=employee_id)
+    """Delete an employee within tenant organization. Requires Admin authorization."""
+    employee = crud.get_employee(db=db, employee_id=employee_id, company_id=current_user.company_id)
     if not employee:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,

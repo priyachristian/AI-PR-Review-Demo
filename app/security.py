@@ -1,9 +1,10 @@
-import hmac
+from datetime import datetime, timedelta, timezone
 from enum import Enum
+import hmac
 from typing import Optional
 from fastapi import Depends, HTTPException, Security, status
-from fastapi.params import Depends as DependsType
 from fastapi.security import APIKeyHeader, HTTPAuthorizationCredentials, HTTPBearer
+import jwt
 from pydantic import BaseModel
 
 from app.config import settings
@@ -17,15 +18,43 @@ class UserRole(str, Enum):
 class User(BaseModel):
     username: str
     role: UserRole
+    company_id: int = 1
     employee_id: Optional[int] = None
 
 
-# Default system user for direct internal calls (e.g., in unit tests)
-DEFAULT_SYSTEM_USER = User(username="system_admin", role=UserRole.ADMIN)
-
-# Security schemes
 api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
 bearer_scheme = HTTPBearer(auto_error=False)
+
+
+def create_access_token(
+    data: dict,
+    expires_delta: Optional[timedelta] = None,
+) -> str:
+    """Generate a signed JWT token containing user claims."""
+    to_encode = data.copy()
+    now = datetime.now(timezone.utc)
+    if expires_delta:
+        expire = now + expires_delta
+    else:
+        expire = now + timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
+    to_encode.update({"exp": expire, "iat": now})
+    return jwt.encode(to_encode, settings.SECRET_KEY, algorithm=settings.TOKEN_ALGORITHM)
+
+
+def decode_access_token(token: str) -> dict:
+    """Decode and validate a signed JWT token."""
+    try:
+        return jwt.decode(
+            token,
+            settings.SECRET_KEY,
+            algorithms=[settings.TOKEN_ALGORITHM],
+        )
+    except jwt.PyJWTError as e:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=f"Invalid token: {str(e)}",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
 
 
 def get_current_user(
@@ -33,8 +62,8 @@ def get_current_user(
     auth_creds: Optional[HTTPAuthorizationCredentials] = Security(bearer_scheme),
 ) -> User:
     """
-    Authenticate request via X-API-Key header or Bearer token.
-    Uses constant-time comparison (hmac.compare_digest) to prevent timing attacks.
+    Authenticate request via JWT Bearer token or static API keys.
+    Extracts tenant identity (company_id) and user identity (employee_id).
     """
     token_candidate: Optional[str] = None
 
@@ -50,13 +79,42 @@ def get_current_user(
             headers={"WWW-Authenticate": "Bearer"},
         )
 
+    # Check if candidate is a signed JWT
+    if token_candidate.count(".") == 2:
+        payload = decode_access_token(token_candidate)
+        username = payload.get("sub", "jwt_user")
+        role_str = payload.get("role", UserRole.EMPLOYEE.value)
+        try:
+            role = UserRole(role_str)
+        except ValueError:
+            role = UserRole.EMPLOYEE
+        company_id = int(payload.get("company_id", 1))
+        emp_id = payload.get("employee_id")
+        employee_id = int(emp_id) if emp_id is not None else None
+        return User(
+            username=username,
+            role=role,
+            company_id=company_id,
+            employee_id=employee_id,
+        )
+
     # Validate against Admin API Key
     if hmac.compare_digest(token_candidate, settings.ADMIN_API_KEY):
-        return User(username="admin_user", role=UserRole.ADMIN)
+        return User(
+            username="admin_api_user",
+            role=UserRole.ADMIN,
+            company_id=1,
+            employee_id=None,
+        )
 
-    # Validate against Employee/Standard API Key
+    # Validate against Standard API Key
     if hmac.compare_digest(token_candidate, settings.API_KEY):
-        return User(username="standard_user", role=UserRole.EMPLOYEE)
+        return User(
+            username="standard_api_user",
+            role=UserRole.EMPLOYEE,
+            company_id=1,
+            employee_id=None,
+        )
 
     raise HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
@@ -66,9 +124,7 @@ def get_current_user(
 
 
 def require_admin(current_user: User = Depends(get_current_user)) -> User:
-    """Enforce admin-only access."""
-    if isinstance(current_user, DependsType):
-        return DEFAULT_SYSTEM_USER
+    """Strictly enforce admin-only access without test bypasses."""
     if current_user.role != UserRole.ADMIN:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -78,30 +134,21 @@ def require_admin(current_user: User = Depends(get_current_user)) -> User:
 
 
 def require_authenticated(current_user: User = Depends(get_current_user)) -> User:
-    """Enforce that the caller is authenticated."""
-    if isinstance(current_user, DependsType):
-        return DEFAULT_SYSTEM_USER
-    return current_user
-
-
-def resolve_user(current_user: User) -> User:
-    """Helper to resolve current_user when an endpoint is called directly as a Python function."""
-    if isinstance(current_user, DependsType):
-        return DEFAULT_SYSTEM_USER
+    """Ensure the caller has a verified authentication principal."""
     return current_user
 
 
 def verify_employee_access(employee_id: int, current_user: User) -> None:
     """
-    Authorize access to an employee's sensitive records.
-    Admins can access all records.
-    Standard employees can only access their own record if employee_id is bound.
+    Authorize access to an employee's sensitive salary/bonus records.
+    - Admins have access within their tenant company.
+    - Employees can ONLY access their own record if bound (denies unbound employee_id by default).
+    Prevents IDOR on salary/bonus endpoints.
     """
-    current_user = resolve_user(current_user)
     if current_user.role == UserRole.ADMIN:
         return
 
-    if current_user.employee_id is not None and current_user.employee_id != employee_id:
+    if current_user.employee_id is None or current_user.employee_id != employee_id:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail=f"Access denied: You do not have permission to view employee ID {employee_id}.",
