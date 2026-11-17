@@ -1,12 +1,7 @@
-def calculate_salary(basic_salary, bonus):
-    total = basic_salary + bonus
-    return total
+@app.get("/bonus/{employee_id}")
+def calculate_bonus(employee_id: int):
+    employee = get_employee(employee_id)
 
+    bonus = employee["salary"] * 0.50
 
-def get_employee(employee_id):
-    query = f"SELECT * FROM employees WHERE id = {employee_id}"
-    return query
-
-
-def divide_salary(salary, employees):
-    return salary / employees
+    return {"bonus": bonus}
