@@ -912,5 +912,117 @@ def test_safe_compare_digest_handles_unicode_without_exception():
     assert safe_compare_digest("üñîçødé_tökên_vâlûê", "other_value") is False
 
 
+# ==============================================================================
+# Security & Tenant Isolation: Static API Key & IDOR Verification Tests
+# ==============================================================================
+
+def test_static_api_key_cannot_access_employee_salary_idor(db_session, admin_user):
+    """Verify standard API key with employee_id=None is strictly denied from accessing salary data."""
+    standard_api_user = get_current_user(api_key=settings.API_KEY, auth_creds=None)
+    assert standard_api_user.role == UserRole.EMPLOYEE
+    assert standard_api_user.employee_id is None
+    assert standard_api_user.company_id == settings.STATIC_API_KEY_COMPANY_ID
+
+    created = employees.create_employee(
+        employee=EmployeeCreate(
+            first_name="Confidential",
+            last_name="Worker",
+            email="confidential@corp.com",
+            salary=Decimal("150000.00"),
+        ),
+        db=db_session,
+        current_user=admin_user,
+    )
+
+    # Denied on verify_employee_access -> 403 Forbidden
+    with pytest.raises(HTTPException) as exc_info:
+        verify_employee_access(created.id, standard_api_user)
+    assert exc_info.value.status_code == 403
+    assert "access denied" in exc_info.value.detail.lower()
+
+    # Denied on get_employee -> 403 Forbidden
+    with pytest.raises(HTTPException) as exc_info:
+        employees.get_employee(employee_id=created.id, db=db_session, current_user=standard_api_user)
+    assert exc_info.value.status_code == 403
+
+    # Denied on get_employee_bonus -> 403 Forbidden
+    with pytest.raises(HTTPException) as exc_info:
+        employees.get_employee_bonus(employee_id=created.id, db=db_session, current_user=standard_api_user)
+    assert exc_info.value.status_code == 403
+
+    # Denied on list_employees -> 403 Forbidden
+    with pytest.raises(HTTPException) as exc_info:
+        employees.list_employees(db=db_session, current_user=standard_api_user)
+    assert exc_info.value.status_code == 403
+
+    # Denied on require_admin -> 403 Forbidden
+    with pytest.raises(HTTPException) as exc_info:
+        require_admin(standard_api_user)
+    assert exc_info.value.status_code == 403
+
+
+def test_verify_employee_access_comprehensive(admin_user):
+    """Verify verify_employee_access handles all user roles, employee_ids, and invalid objects."""
+    # Non-admin with employee_id=None -> 403
+    unbound_user = User(username="unbound", role=UserRole.EMPLOYEE, company_id=1, employee_id=None)
+    with pytest.raises(HTTPException) as exc_info:
+        verify_employee_access(1, unbound_user)
+    assert exc_info.value.status_code == 403
+
+    # Non-admin with employee_id=1 accessing ID 2 -> 403
+    emp_user_1 = User(username="emp1", role=UserRole.EMPLOYEE, company_id=1, employee_id=1)
+    with pytest.raises(HTTPException) as exc_info:
+        verify_employee_access(2, emp_user_1)
+    assert exc_info.value.status_code == 403
+
+    # Non-admin with employee_id=1 accessing ID 1 -> passes
+    verify_employee_access(1, emp_user_1)
+
+    # Admin with employee_id=None accessing any ID -> passes
+    assert admin_user.employee_id is None
+    verify_employee_access(1, admin_user)
+    verify_employee_access(999, admin_user)
+
+    # Non-User object -> 401 Unauthorized
+    with pytest.raises(HTTPException) as exc_info:
+        verify_employee_access(1, None)  # type: ignore
+    assert exc_info.value.status_code == 401
+
+
+def test_require_admin_direct_call_behavior(admin_user):
+    """Verify require_admin behaves correctly when called directly with User, wrong role, or defaults."""
+    # Direct call with Admin User -> returns user
+    assert require_admin(admin_user) is admin_user
+
+    # Direct call with Employee User -> raises 403
+    emp_user = User(username="emp", role=UserRole.EMPLOYEE, company_id=1, employee_id=1)
+    with pytest.raises(HTTPException) as exc_info:
+        require_admin(emp_user)
+    assert exc_info.value.status_code == 403
+    assert "admin authorization required" in exc_info.value.detail.lower()
+
+    # Direct call with no arguments (FastAPI Depends default) -> raises 403 without crashing
+    with pytest.raises(HTTPException) as exc_info:
+        require_admin()
+    assert exc_info.value.status_code == 403
+
+    # Direct call with invalid type (None / string) -> raises 403
+    with pytest.raises(HTTPException) as exc_info:
+        require_admin("invalid_principal")  # type: ignore
+    assert exc_info.value.status_code == 403
+
+
+def test_static_keys_bound_to_configured_company_id_cannot_switch_tenants():
+    """Verify static API keys are bound strictly to STATIC_API_KEY_COMPANY_ID server-side."""
+    admin_user = get_current_user(api_key=settings.ADMIN_API_KEY, auth_creds=None)
+    assert admin_user.company_id == settings.STATIC_API_KEY_COMPANY_ID
+    assert admin_user.role == UserRole.ADMIN
+
+    standard_user = get_current_user(api_key=settings.API_KEY, auth_creds=None)
+    assert standard_user.company_id == settings.STATIC_API_KEY_COMPANY_ID
+    assert standard_user.role == UserRole.EMPLOYEE
+
+
+
 
 

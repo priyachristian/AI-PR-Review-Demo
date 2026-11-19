@@ -28,6 +28,10 @@ class Settings(BaseSettings):
     )
     TOKEN_ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60
+    STATIC_API_KEY_COMPANY_ID: int = Field(
+        default=1,
+        description="Tenant/Company ID bound server-side to static API keys",
+    )
 
     # Business Logic Defaults
     DEFAULT_BONUS_PERCENTAGE: Decimal = Decimal("10.0")

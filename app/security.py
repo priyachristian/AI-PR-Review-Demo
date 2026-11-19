@@ -23,7 +23,6 @@ class User(BaseModel):
 
 
 api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
-company_id_header = APIKeyHeader(name="X-Company-ID", auto_error=False)
 bearer_scheme = HTTPBearer(auto_error=False)
 
 
@@ -71,12 +70,12 @@ def decode_access_token(token: str) -> dict:
 def get_current_user(
     api_key: Optional[str] = Security(api_key_header),
     auth_creds: Optional[HTTPAuthorizationCredentials] = Security(bearer_scheme),
-    x_company_id: Optional[str] = Security(company_id_header),
 ) -> User:
     """
     Authenticate request via JWT Bearer token or static API keys.
     Extracts tenant identity (company_id) and user identity (employee_id).
     Safely handles non-ASCII credentials returning HTTP 401 instead of 500.
+    Tenant identity is strictly bound to credential claims / configuration (never client headers).
     """
     token_candidate: Optional[str] = None
 
@@ -129,31 +128,23 @@ def get_current_user(
             employee_id=employee_id,
         )
 
-    # Resolve static company_id for API key credentials if provided
-    static_company_id = 1
-    if x_company_id:
-        try:
-            parsed_cid = int(x_company_id)
-            if parsed_cid > 0:
-                static_company_id = parsed_cid
-        except (ValueError, TypeError):
-            pass
-
     # Validate against Admin API Key using safe constant-time comparison
+    # Tenant is strictly bound server-side to configured STATIC_API_KEY_COMPANY_ID
     if safe_compare_digest(token_candidate, settings.ADMIN_API_KEY):
         return User(
             username="admin_api_user",
             role=UserRole.ADMIN,
-            company_id=static_company_id,
+            company_id=settings.STATIC_API_KEY_COMPANY_ID,
             employee_id=None,
         )
 
     # Validate against Standard API Key using safe constant-time comparison
+    # Tenant is strictly bound server-side to configured STATIC_API_KEY_COMPANY_ID
     if safe_compare_digest(token_candidate, settings.API_KEY):
         return User(
             username="standard_api_user",
             role=UserRole.EMPLOYEE,
-            company_id=static_company_id,
+            company_id=settings.STATIC_API_KEY_COMPANY_ID,
             employee_id=None,
         )
 
@@ -166,7 +157,7 @@ def get_current_user(
 
 def require_admin(current_user: User = Depends(get_current_user)) -> User:
     """Strictly enforce admin-only access without test bypasses."""
-    if current_user.role != UserRole.ADMIN:
+    if not isinstance(current_user, User) or current_user.role != UserRole.ADMIN:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Admin authorization required to access this resource.",
@@ -176,6 +167,12 @@ def require_admin(current_user: User = Depends(get_current_user)) -> User:
 
 def require_authenticated(current_user: User = Depends(get_current_user)) -> User:
     """Ensure the caller has a verified authentication principal."""
+    if not isinstance(current_user, User):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Authentication credentials are required.",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
     return current_user
 
 
@@ -186,6 +183,12 @@ def verify_employee_access(employee_id: int, current_user: User) -> None:
     - Employees can ONLY access their own record if bound (denies unbound employee_id by default).
     Prevents IDOR on salary/bonus endpoints.
     """
+    if not isinstance(current_user, User):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Authentication credentials are required.",
+        )
+
     if current_user.role == UserRole.ADMIN:
         return
 
