@@ -1,8 +1,14 @@
+from collections import defaultdict
+from decimal import Decimal, ROUND_HALF_UP
 from typing import List, Optional
 from fastapi import HTTPException, status
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from app import models, schemas
+
+
+def _round(val: Decimal) -> Decimal:
+    return val.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
 
 
 def get_employee(db: Session, employee_id: int, company_id: int = 1) -> Optional[models.Employee]:
@@ -36,6 +42,8 @@ def get_employees(
     limit: int = 100,
     department: Optional[str] = None,
     is_active: Optional[bool] = None,
+    min_salary: Optional[Decimal] = None,
+    max_salary: Optional[Decimal] = None,
 ) -> List[models.Employee]:
     """Retrieve a list of employees scoped to tenant with pagination and optional filters."""
     query = db.query(models.Employee).filter(models.Employee.company_id == company_id)
@@ -43,6 +51,10 @@ def get_employees(
         query = query.filter(models.Employee.department.ilike(f"%{department.strip()}%"))
     if is_active is not None:
         query = query.filter(models.Employee.is_active == is_active)
+    if min_salary is not None:
+        query = query.filter(models.Employee.salary >= min_salary)
+    if max_salary is not None:
+        query = query.filter(models.Employee.salary <= max_salary)
     return query.offset(skip).limit(limit).all()
 
 
@@ -102,3 +114,58 @@ def delete_employee(db: Session, db_employee: models.Employee) -> None:
     """Delete an employee record."""
     db.delete(db_employee)
     db.commit()
+
+
+def get_company_payroll_report(db: Session, company_id: int = 1) -> schemas.CompanyPayrollReport:
+    """Compute aggregate payroll and department statistics scoped to tenant."""
+    employees = db.query(models.Employee).filter(models.Employee.company_id == company_id).all()
+
+    total_headcount = len(employees)
+    active_headcount = sum(1 for e in employees if e.is_active)
+
+    dept_groups = defaultdict(list)
+    for emp in employees:
+        dept_groups[emp.department].append(emp)
+
+    dept_summaries: List[schemas.DepartmentSummary] = []
+    total_company_payroll = Decimal("0.00")
+
+    for dept_name, emps in sorted(dept_groups.items()):
+        dept_total = len(emps)
+        dept_active = sum(1 for e in emps if e.is_active)
+        salaries = [Decimal(str(e.salary)) for e in emps if e.salary is not None]
+
+        dept_payroll = sum(salaries, Decimal("0.00"))
+        total_company_payroll += dept_payroll
+
+        avg_salary = (dept_payroll / Decimal(len(salaries))) if salaries else Decimal("0.00")
+        min_salary = min(salaries) if salaries else None
+        max_salary = max(salaries) if salaries else None
+
+        dept_summaries.append(
+            schemas.DepartmentSummary(
+                department=dept_name,
+                total_employees=dept_total,
+                active_employees=dept_active,
+                total_payroll=_round(dept_payroll),
+                average_salary=_round(avg_salary),
+                min_salary=_round(min_salary) if min_salary is not None else None,
+                max_salary=_round(max_salary) if max_salary is not None else None,
+            )
+        )
+
+    company_avg = (
+        (total_company_payroll / Decimal(total_headcount))
+        if total_headcount > 0
+        else Decimal("0.00")
+    )
+
+    return schemas.CompanyPayrollReport(
+        company_id=company_id,
+        total_headcount=total_headcount,
+        active_headcount=active_headcount,
+        total_annual_payroll=_round(total_company_payroll),
+        average_salary=_round(company_avg),
+        departments=dept_summaries,
+    )
+

@@ -1,6 +1,6 @@
 from datetime import datetime
 from decimal import Decimal
-from typing import Optional
+from typing import List, Optional
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
 
 
@@ -123,3 +123,23 @@ class BonusResponse(BaseModel):
     total_compensation: Decimal = Field(..., description="Total compensation (salary + bonus)")
 
     model_config = ConfigDict(from_attributes=True)
+
+
+class DepartmentSummary(BaseModel):
+    department: str = Field(..., description="Department name")
+    total_employees: int = Field(..., description="Total headcount in department")
+    active_employees: int = Field(..., description="Active headcount in department")
+    total_payroll: Decimal = Field(..., description="Total annual salary expenditure")
+    average_salary: Decimal = Field(..., description="Average annual salary")
+    min_salary: Optional[Decimal] = Field(default=None, description="Lowest salary in department")
+    max_salary: Optional[Decimal] = Field(default=None, description="Highest salary in department")
+
+
+class CompanyPayrollReport(BaseModel):
+    company_id: int = Field(..., description="Tenant / Company ID")
+    total_headcount: int = Field(..., description="Total company headcount")
+    active_headcount: int = Field(..., description="Total active headcount")
+    total_annual_payroll: Decimal = Field(..., description="Total annual payroll expenditure")
+    average_salary: Decimal = Field(..., description="Company-wide average salary")
+    departments: List[DepartmentSummary] = Field(default_factory=list, description="Departmental breakdown")
+

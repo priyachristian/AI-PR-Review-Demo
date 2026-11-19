@@ -408,3 +408,127 @@ def test_bonus_invalid_percentage_raises_400(db_session, admin_user):
     assert exc_info.value.status_code == 400
     assert "between 0 and 100" in exc_info.value.detail
 
+
+def test_salary_range_filtering(db_session, admin_user):
+    """Verify employees can be filtered by min_salary and max_salary."""
+    employees.create_employee(
+        employee=EmployeeCreate(
+            first_name="Low",
+            last_name="Earner",
+            email="low@example.com",
+            salary=Decimal("40000.00"),
+        ),
+        db=db_session,
+        current_user=admin_user,
+    )
+    employees.create_employee(
+        employee=EmployeeCreate(
+            first_name="Mid",
+            last_name="Earner",
+            email="mid@example.com",
+            salary=Decimal("75000.00"),
+        ),
+        db=db_session,
+        current_user=admin_user,
+    )
+    employees.create_employee(
+        employee=EmployeeCreate(
+            first_name="High",
+            last_name="Earner",
+            email="high@example.com",
+            salary=Decimal("120000.00"),
+        ),
+        db=db_session,
+        current_user=admin_user,
+    )
+
+    filtered = employees.list_employees(
+        min_salary=Decimal("50000.00"),
+        max_salary=Decimal("100000.00"),
+        db=db_session,
+        current_user=admin_user,
+    )
+    assert len(filtered) == 1
+    assert filtered[0].first_name == "Mid"
+
+
+def test_company_payroll_report(db_session, admin_user, other_tenant_admin):
+    """Verify aggregate payroll analytics and department breakdown."""
+    # Seed Company 1 employees across departments
+    employees.create_employee(
+        employee=EmployeeCreate(
+            first_name="Dev",
+            last_name="A",
+            department="Engineering",
+            email="deva@example.com",
+            salary=Decimal("100000.00"),
+        ),
+        db=db_session,
+        current_user=admin_user,
+    )
+    employees.create_employee(
+        employee=EmployeeCreate(
+            first_name="Dev",
+            last_name="B",
+            department="Engineering",
+            email="devb@example.com",
+            salary=Decimal("120000.00"),
+        ),
+        db=db_session,
+        current_user=admin_user,
+    )
+    employees.create_employee(
+        employee=EmployeeCreate(
+            first_name="Sales",
+            last_name="A",
+            department="Sales",
+            email="salesa@example.com",
+            salary=Decimal("80000.00"),
+        ),
+        db=db_session,
+        current_user=admin_user,
+    )
+
+    # Seed Company 2 employee to ensure tenant isolation in report
+    employees.create_employee(
+        employee=EmployeeCreate(
+            first_name="Other",
+            last_name="Corp",
+            department="Engineering",
+            email="other@corp2.com",
+            salary=Decimal("200000.00"),
+        ),
+        db=db_session,
+        current_user=other_tenant_admin,
+    )
+
+    report = employees.get_payroll_report(
+        db=db_session,
+        current_user=admin_user,
+    )
+
+    assert report.company_id == 1
+    assert report.total_headcount == 3
+    assert report.active_headcount == 3
+    assert report.total_annual_payroll == Decimal("300000.00")
+    assert report.average_salary == Decimal("100000.00")
+    assert len(report.departments) == 2
+
+    eng_summary = next(d for d in report.departments if d.department == "Engineering")
+    assert eng_summary.total_employees == 2
+    assert eng_summary.total_payroll == Decimal("220000.00")
+    assert eng_summary.average_salary == Decimal("110000.00")
+    assert eng_summary.min_salary == Decimal("100000.00")
+    assert eng_summary.max_salary == Decimal("120000.00")
+
+
+def test_payroll_report_forbidden_for_non_admin(db_session, standard_employee_user):
+    """Verify non-admin users cannot access executive payroll reports."""
+    with pytest.raises(HTTPException) as exc_info:
+        employees.get_payroll_report(
+            db=db_session,
+            current_user=standard_employee_user,
+        )
+    assert exc_info.value.status_code == 403
+
+

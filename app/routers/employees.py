@@ -33,6 +33,7 @@ def create_employee(
     current_user: security.User = Depends(security.require_admin),
 ):
     """Register a new employee scoped to the tenant organization. Requires Admin authorization."""
+    security.require_admin(current_user)
     existing = crud.get_employee_by_email(db, email=employee.email, company_id=current_user.company_id)
     if existing:
         raise HTTPException(
@@ -52,6 +53,8 @@ def list_employees(
     limit: int = Query(100, ge=1, le=500, description="Max number of records to return"),
     department: Optional[str] = Query(None, min_length=1, max_length=100, description="Filter by department"),
     is_active: Optional[bool] = Query(None, description="Filter by active status"),
+    min_salary: Optional[Decimal] = Query(None, ge=0, description="Filter by minimum salary"),
+    max_salary: Optional[Decimal] = Query(None, ge=0, description="Filter by maximum salary"),
     db: Session = Depends(get_db),
     current_user: security.User = Depends(security.require_authenticated),
 ):
@@ -63,7 +66,23 @@ def list_employees(
         limit=_unwrap(limit, 100),
         department=_unwrap(department, None),
         is_active=_unwrap(is_active, None),
+        min_salary=_unwrap(min_salary, None),
+        max_salary=_unwrap(max_salary, None),
     )
+
+
+@router.get(
+    "/reports/payroll",
+    response_model=schemas.CompanyPayrollReport,
+    summary="Get company payroll analytics and department breakdown",
+)
+def get_payroll_report(
+    db: Session = Depends(get_db),
+    current_user: security.User = Depends(security.require_admin),
+):
+    """Retrieve aggregate payroll statistics and department breakdown. Requires Admin authorization."""
+    security.require_admin(current_user)
+    return crud.get_company_payroll_report(db=db, company_id=current_user.company_id)
 
 
 @router.get(
@@ -137,6 +156,7 @@ def update_employee(
     current_user: security.User = Depends(security.require_admin),
 ):
     """Update fields of an employee within the tenant organization. Requires Admin authorization."""
+    security.require_admin(current_user)
     employee = crud.get_employee(db=db, employee_id=employee_id, company_id=current_user.company_id)
     if not employee:
         raise HTTPException(
@@ -174,6 +194,7 @@ def delete_employee(
     current_user: security.User = Depends(security.require_admin),
 ):
     """Delete an employee within tenant organization. Requires Admin authorization."""
+    security.require_admin(current_user)
     employee = crud.get_employee(db=db, employee_id=employee_id, company_id=current_user.company_id)
     if not employee:
         raise HTTPException(
