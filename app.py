@@ -3,6 +3,5 @@
 Provides a clean, thin entrypoint without duplicate routes, circular imports, or side effects.
 """
 
-from app.main import app
 
 __all__ = ["app"]
