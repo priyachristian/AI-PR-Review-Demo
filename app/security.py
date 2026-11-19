@@ -18,12 +18,23 @@ class UserRole(str, Enum):
 class User(BaseModel):
     username: str
     role: UserRole
-    company_id: int = 1
+    company_id: int
     employee_id: Optional[int] = None
 
 
 api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
+company_id_header = APIKeyHeader(name="X-Company-ID", auto_error=False)
 bearer_scheme = HTTPBearer(auto_error=False)
+
+
+def safe_compare_digest(val_a: str, val_b: str) -> bool:
+    """
+    Safely compare two strings in constant time without raising TypeError on non-ASCII characters.
+    Converts both strings to UTF-8 bytes before comparing using hmac.compare_digest.
+    """
+    if not isinstance(val_a, str) or not isinstance(val_b, str):
+        return False
+    return hmac.compare_digest(val_a.encode("utf-8"), val_b.encode("utf-8"))
 
 
 def create_access_token(
@@ -42,14 +53,14 @@ def create_access_token(
 
 
 def decode_access_token(token: str) -> dict:
-    """Decode and validate a signed JWT token."""
+    """Decode and validate a signed JWT token, returning 401 on any failure."""
     try:
         return jwt.decode(
             token,
             settings.SECRET_KEY,
             algorithms=[settings.TOKEN_ALGORITHM],
         )
-    except jwt.PyJWTError as e:
+    except (jwt.PyJWTError, UnicodeError, Exception) as e:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail=f"Invalid token: {str(e)}",
@@ -60,10 +71,12 @@ def decode_access_token(token: str) -> dict:
 def get_current_user(
     api_key: Optional[str] = Security(api_key_header),
     auth_creds: Optional[HTTPAuthorizationCredentials] = Security(bearer_scheme),
+    x_company_id: Optional[str] = Security(company_id_header),
 ) -> User:
     """
     Authenticate request via JWT Bearer token or static API keys.
     Extracts tenant identity (company_id) and user identity (employee_id).
+    Safely handles non-ASCII credentials returning HTTP 401 instead of 500.
     """
     token_candidate: Optional[str] = None
 
@@ -88,7 +101,25 @@ def get_current_user(
             role = UserRole(role_str)
         except ValueError:
             role = UserRole.EMPLOYEE
-        company_id = int(payload.get("company_id", 1))
+
+        company_id_raw = payload.get("company_id")
+        if company_id_raw is None:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Token is missing required 'company_id' claim.",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+        try:
+            company_id = int(company_id_raw)
+            if company_id <= 0:
+                raise ValueError()
+        except (ValueError, TypeError):
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Token 'company_id' claim must be a valid positive integer.",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+
         emp_id = payload.get("employee_id")
         employee_id = int(emp_id) if emp_id is not None else None
         return User(
@@ -98,21 +129,31 @@ def get_current_user(
             employee_id=employee_id,
         )
 
-    # Validate against Admin API Key
-    if hmac.compare_digest(token_candidate, settings.ADMIN_API_KEY):
+    # Resolve static company_id for API key credentials if provided
+    static_company_id = 1
+    if x_company_id:
+        try:
+            parsed_cid = int(x_company_id)
+            if parsed_cid > 0:
+                static_company_id = parsed_cid
+        except (ValueError, TypeError):
+            pass
+
+    # Validate against Admin API Key using safe constant-time comparison
+    if safe_compare_digest(token_candidate, settings.ADMIN_API_KEY):
         return User(
             username="admin_api_user",
             role=UserRole.ADMIN,
-            company_id=1,
+            company_id=static_company_id,
             employee_id=None,
         )
 
-    # Validate against Standard API Key
-    if hmac.compare_digest(token_candidate, settings.API_KEY):
+    # Validate against Standard API Key using safe constant-time comparison
+    if safe_compare_digest(token_candidate, settings.API_KEY):
         return User(
             username="standard_api_user",
             role=UserRole.EMPLOYEE,
-            company_id=1,
+            company_id=static_company_id,
             employee_id=None,
         )
 

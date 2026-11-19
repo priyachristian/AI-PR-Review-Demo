@@ -1,6 +1,6 @@
 from contextlib import asynccontextmanager
 from decimal import Decimal
-from typing import Optional
+from typing import Annotated, Optional
 from fastapi import Depends, FastAPI, Path, Query
 from sqlalchemy.orm import Session
 
@@ -51,13 +51,15 @@ def health_check():
     summary="Convenience alias for /api/v1/employees/{employee_id}/bonus",
 )
 def root_calculate_bonus(
-    employee_id: int = Path(..., ge=1, description="Employee ID (positive integer)"),
-    bonus_percentage: Optional[Decimal] = Query(
-        default=None,
-        ge=0,
-        le=settings.MAX_BONUS_PERCENTAGE,
-        description="Bonus percentage (0 to 100)",
-    ),
+    employee_id: Annotated[int, Path(ge=1, description="Employee ID (positive integer)")],
+    bonus_percentage: Annotated[
+        Optional[Decimal],
+        Query(
+            ge=0,
+            le=settings.MAX_BONUS_PERCENTAGE,
+            description="Bonus percentage (0 to 100)",
+        ),
+    ] = None,
     db: Session = Depends(get_db),
     current_user: security.User = Depends(security.require_authenticated),
 ):

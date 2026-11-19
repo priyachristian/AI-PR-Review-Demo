@@ -1,5 +1,5 @@
 from decimal import Decimal
-from typing import Any, List, Optional
+from typing import Annotated, List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, status
 from sqlalchemy.orm import Session
 
@@ -7,18 +7,17 @@ from app import crud, schemas, security
 from app.bonus import calculate_employee_bonus
 from app.config import settings
 from app.database import get_db
+from app.exceptions import (
+    DomainError,
+    EmployeeMissingSalaryError,
+    InvalidBonusPercentageError,
+    InvalidSalaryError,
+)
 
 router = APIRouter(
     prefix="/employees",
     tags=["Employees"],
 )
-
-
-def _unwrap(val: Any, default: Any = None) -> Any:
-    """Helper to unwrap FastAPI parameter defaults when endpoints are called directly in tests."""
-    if hasattr(val, "default"):
-        return default if val.default is ... else val.default
-    return val
 
 
 @router.post(
@@ -49,31 +48,32 @@ def create_employee(
     summary="List all employees with optional filters",
 )
 def list_employees(
-    skip: int = Query(0, ge=0, description="Number of records to skip"),
-    limit: int = Query(100, ge=1, le=500, description="Max number of records to return"),
-    department: Optional[str] = Query(None, min_length=1, max_length=100, description="Filter by department"),
-    is_active: Optional[bool] = Query(None, description="Filter by active status"),
-    min_salary: Optional[Decimal] = Query(None, ge=0, description="Filter by minimum salary"),
-    max_salary: Optional[Decimal] = Query(None, ge=0, description="Filter by maximum salary"),
-    search: Optional[str] = Query(None, min_length=1, max_length=100, description="Search by name or email"),
-    sort_by: str = Query("id", pattern="^(id|first_name|last_name|salary|created_at)$", description="Field to sort by"),
-    order: str = Query("asc", pattern="^(asc|desc)$", description="Sort order (asc or desc)"),
+    skip: Annotated[int, Query(ge=0, description="Number of records to skip")] = 0,
+    limit: Annotated[int, Query(ge=1, le=500, description="Max number of records to return")] = 100,
+    department: Annotated[Optional[str], Query(min_length=1, max_length=100, description="Filter by department")] = None,
+    is_active: Annotated[Optional[bool], Query(description="Filter by active status")] = None,
+    min_salary: Annotated[Optional[Decimal], Query(ge=0, description="Filter by minimum salary")] = None,
+    max_salary: Annotated[Optional[Decimal], Query(ge=0, description="Filter by maximum salary")] = None,
+    search: Annotated[Optional[str], Query(min_length=1, max_length=100, description="Search by name or email")] = None,
+    sort_by: Annotated[str, Query(pattern="^(id|first_name|last_name|salary|created_at)$", description="Field to sort by")] = "id",
+    order: Annotated[str, Query(pattern="^(asc|desc)$", description="Sort order (asc or desc)")] = "asc",
     db: Session = Depends(get_db),
-    current_user: security.User = Depends(security.require_authenticated),
+    current_user: security.User = Depends(security.require_admin),
 ):
-    """Retrieve employees scoped to the authenticated tenant organization with search and sorting."""
+    """Retrieve employees scoped to the tenant organization with search and sorting. Requires Admin authorization."""
+    security.require_admin(current_user)
     return crud.get_employees(
         db=db,
         company_id=current_user.company_id,
-        skip=_unwrap(skip, 0),
-        limit=_unwrap(limit, 100),
-        department=_unwrap(department, None),
-        is_active=_unwrap(is_active, None),
-        min_salary=_unwrap(min_salary, None),
-        max_salary=_unwrap(max_salary, None),
-        search=_unwrap(search, None),
-        sort_by=_unwrap(sort_by, "id"),
-        order=_unwrap(order, "asc"),
+        skip=skip,
+        limit=limit,
+        department=department,
+        is_active=is_active,
+        min_salary=min_salary,
+        max_salary=max_salary,
+        search=search,
+        sort_by=sort_by,
+        order=order,
     )
 
 
@@ -97,7 +97,7 @@ def get_payroll_report(
     summary="Get an employee by ID",
 )
 def get_employee(
-    employee_id: int = Path(..., ge=1, description="Employee ID (positive integer)"),
+    employee_id: Annotated[int, Path(ge=1, description="Employee ID (positive integer)")],
     db: Session = Depends(get_db),
     current_user: security.User = Depends(security.require_authenticated),
 ):
@@ -119,13 +119,15 @@ def get_employee(
     summary="Calculate bonus and total compensation for an employee",
 )
 def get_employee_bonus(
-    employee_id: int = Path(..., ge=1, description="Employee ID (positive integer)"),
-    bonus_percentage: Optional[Decimal] = Query(
-        default=None,
-        ge=0,
-        le=settings.MAX_BONUS_PERCENTAGE,
-        description="Bonus percentage (0 to 100)",
-    ),
+    employee_id: Annotated[int, Path(ge=1, description="Employee ID (positive integer)")],
+    bonus_percentage: Annotated[
+        Optional[Decimal],
+        Query(
+            ge=0,
+            le=settings.MAX_BONUS_PERCENTAGE,
+            description="Bonus percentage (0 to 100)",
+        ),
+    ] = None,
     db: Session = Depends(get_db),
     current_user: security.User = Depends(security.require_authenticated),
 ):
@@ -142,12 +144,17 @@ def get_employee_bonus(
             detail=f"Employee with ID {employee_id} not found.",
         )
 
-    pct = _unwrap(bonus_percentage, None)
-    return calculate_employee_bonus(
-        employee=employee,
-        bonus_percentage=pct,
-        default_percentage=settings.DEFAULT_BONUS_PERCENTAGE,
-    )
+    try:
+        return calculate_employee_bonus(
+            employee=employee,
+            bonus_percentage=bonus_percentage,
+            default_percentage=settings.DEFAULT_BONUS_PERCENTAGE,
+        )
+    except (EmployeeMissingSalaryError, InvalidBonusPercentageError, InvalidSalaryError, DomainError) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        )
 
 
 @router.put(
@@ -156,8 +163,8 @@ def get_employee_bonus(
     summary="Update an employee's details",
 )
 def update_employee(
-    employee_id: int = Path(..., ge=1, description="Employee ID (positive integer)"),
-    employee_update: schemas.EmployeeUpdate = ...,
+    employee_id: Annotated[int, Path(ge=1, description="Employee ID (positive integer)")],
+    employee_update: schemas.EmployeeUpdate,
     db: Session = Depends(get_db),
     current_user: security.User = Depends(security.require_admin),
 ):
@@ -195,7 +202,7 @@ def update_employee(
     summary="Delete an employee",
 )
 def delete_employee(
-    employee_id: int = Path(..., ge=1, description="Employee ID (positive integer)"),
+    employee_id: Annotated[int, Path(ge=1, description="Employee ID (positive integer)")],
     db: Session = Depends(get_db),
     current_user: security.User = Depends(security.require_admin),
 ):

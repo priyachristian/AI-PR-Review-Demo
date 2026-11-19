@@ -1,8 +1,13 @@
 from decimal import Decimal, ROUND_HALF_UP
 from typing import Any, Optional, Union
-from fastapi import HTTPException, status
 
 from app import schemas
+from app.exceptions import (
+    DomainError,
+    EmployeeMissingSalaryError,
+    InvalidBonusPercentageError,
+    InvalidSalaryError,
+)
 
 Number = Union[Decimal, int, float, str]
 
@@ -20,15 +25,15 @@ def round_currency(amount: Decimal) -> Decimal:
 def calculate_bonus(salary: Number, bonus_percentage: Number = Decimal("10.0")) -> Decimal:
     """
     Calculate bonus given base salary and percentage (0-100).
-    Framework-free pure calculation function.
+    Framework-free pure calculation function raising domain exceptions.
     """
     salary_dec = to_decimal(salary)
     pct_dec = to_decimal(bonus_percentage)
 
     if salary_dec < Decimal("0"):
-        raise ValueError("Salary must be non-negative.")
+        raise InvalidSalaryError("Salary must be non-negative.")
     if pct_dec < Decimal("0") or pct_dec > Decimal("100"):
-        raise ValueError("Bonus percentage must be between 0 and 100.")
+        raise InvalidBonusPercentageError("Bonus percentage must be between 0 and 100.")
 
     bonus = (salary_dec * pct_dec) / Decimal("100")
     return round_currency(bonus)
@@ -40,9 +45,9 @@ def calculate_salary(basic_salary: Number, bonus: Number) -> Decimal:
     bonus_dec = to_decimal(bonus)
 
     if basic_dec < Decimal("0"):
-        raise ValueError("Basic salary must be non-negative.")
+        raise InvalidSalaryError("Basic salary must be non-negative.")
     if bonus_dec < Decimal("0"):
-        raise ValueError("Bonus must be non-negative.")
+        raise InvalidSalaryError("Bonus must be non-negative.")
 
     return round_currency(basic_dec + bonus_dec)
 
@@ -57,7 +62,7 @@ def divide_salary(salary: Number, employees: int) -> Decimal:
     if not isinstance(employees, int) or employees <= 0:
         raise ValueError("Number of employees must be a positive integer greater than zero.")
     if salary_dec < Decimal("0"):
-        raise ValueError("Salary must be non-negative.")
+        raise InvalidSalaryError("Salary must be non-negative.")
 
     return round_currency(salary_dec / Decimal(employees))
 
@@ -97,26 +102,18 @@ def calculate_employee_bonus(
     """
     Single canonical service function to calculate employee bonus.
     Consolidates bonus logic to prevent duplication across handlers.
+    Raises domain exceptions on invalid input or missing salary.
     """
     if employee.salary is None:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Employee with ID {employee.id} does not have a base salary configured.",
-        )
+        raise EmployeeMissingSalaryError(employee_id=employee.id)
 
     pct = bonus_percentage if bonus_percentage is not None else default_percentage
-    try:
-        bonus_val = calculate_bonus(salary=employee.salary, bonus_percentage=pct)
-        total_comp = calculate_salary(basic_salary=employee.salary, bonus=bonus_val)
-    except ValueError as ve:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=str(ve),
-        )
+    bonus_val = calculate_bonus(salary=employee.salary, bonus_percentage=pct)
+    total_comp = calculate_salary(basic_salary=employee.salary, bonus=bonus_val)
 
     return schemas.BonusResponse(
         employee_id=employee.id,
-        company_id=getattr(employee, "company_id", 1),
+        company_id=employee.company_id,
         first_name=employee.first_name,
         last_name=employee.last_name,
         department=employee.department,

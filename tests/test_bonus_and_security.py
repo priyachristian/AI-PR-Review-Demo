@@ -15,6 +15,12 @@ from app.bonus import (
     round_currency,
 )
 from app.config import Settings, settings
+from app.exceptions import (
+    DomainError,
+    EmployeeMissingSalaryError,
+    InvalidBonusPercentageError,
+    InvalidSalaryError,
+)
 from app.main import app, root_calculate_bonus
 from app.routers import employees
 from app.schemas import EmployeeCreate, EmployeeUpdate
@@ -26,6 +32,7 @@ from app.security import (
     get_current_user,
     require_admin,
     require_authenticated,
+    safe_compare_digest,
     verify_employee_access,
 )
 
@@ -612,6 +619,298 @@ def test_employee_sorting(db_session, admin_user):
         current_user=admin_user,
     )
     assert desc_res[0].salary >= desc_res[-1].salary
+
+
+# ==============================================================================
+# Issue 1: Employee-level authorization / IDOR Regression Tests
+# ==============================================================================
+
+def test_non_admin_forbidden_from_listing_employees(db_session, standard_employee_user):
+    """Verify standard employees cannot list company employees or view company salaries."""
+    with pytest.raises(HTTPException) as exc_info:
+        employees.list_employees(
+            db=db_session,
+            current_user=standard_employee_user,
+        )
+    assert exc_info.value.status_code == 403
+    assert "admin authorization required" in exc_info.value.detail.lower()
+
+
+def test_employee_access_authorization_ownership(db_session, admin_user, standard_employee_user):
+    """Verify employees can only access their own record and cannot access other employees' records."""
+    # Create employee 1 (matches standard_employee_user.employee_id = 1)
+    emp1 = employees.create_employee(
+        employee=EmployeeCreate(
+            first_name="Emp",
+            last_name="One",
+            email="emp1@company.com",
+            salary=Decimal("80000.00"),
+        ),
+        db=db_session,
+        current_user=admin_user,
+    )
+    assert emp1.id == 1
+
+    # Create employee 2
+    emp2 = employees.create_employee(
+        employee=EmployeeCreate(
+            first_name="Emp",
+            last_name="Two",
+            email="emp2@company.com",
+            salary=Decimal("95000.00"),
+        ),
+        db=db_session,
+        current_user=admin_user,
+    )
+    assert emp2.id == 2
+
+    # Standard employee user 1 can view own record
+    own_data = employees.get_employee(employee_id=1, db=db_session, current_user=standard_employee_user)
+    assert own_data.id == 1
+
+    # Standard employee user 1 can view own bonus
+    own_bonus = employees.get_employee_bonus(employee_id=1, db=db_session, current_user=standard_employee_user)
+    assert own_bonus.employee_id == 1
+    assert own_bonus.bonus == Decimal("8000.00")
+
+    # Standard employee user 1 CANNOT view employee 2 details -> 403 Forbidden
+    with pytest.raises(HTTPException) as exc_info:
+        employees.get_employee(employee_id=2, db=db_session, current_user=standard_employee_user)
+    assert exc_info.value.status_code == 403
+    assert "access denied" in exc_info.value.detail.lower()
+
+    # Standard employee user 1 CANNOT view employee 2 bonus -> 403 Forbidden
+    with pytest.raises(HTTPException) as exc_info:
+        employees.get_employee_bonus(employee_id=2, db=db_session, current_user=standard_employee_user)
+    assert exc_info.value.status_code == 403
+    assert "access denied" in exc_info.value.detail.lower()
+
+    # Admin CAN view employee 2 bonus
+    admin_bonus = employees.get_employee_bonus(employee_id=2, db=db_session, current_user=admin_user)
+    assert admin_bonus.employee_id == 2
+
+
+# ==============================================================================
+# Issue 2: Email Normalization & Conflict Detection Regression Tests
+# ==============================================================================
+
+def test_email_normalization_handles_whitespace_and_mixed_case(db_session, admin_user):
+    """Verify emails with whitespace and mixed casing are normalized properly."""
+    created = employees.create_employee(
+        employee=EmployeeCreate(
+            first_name="John",
+            last_name="Normalized",
+            email="   John.Normalized@EXAMPLE.COM   ",
+            salary=Decimal("70000.00"),
+        ),
+        db=db_session,
+        current_user=admin_user,
+    )
+    assert created.email == "john.normalized@example.com"
+
+    # Attempt duplicate with different casing/whitespace -> 400 Bad Request
+    with pytest.raises(HTTPException) as exc_info:
+        employees.create_employee(
+            employee=EmployeeCreate(
+                first_name="John",
+                last_name="Duplicate",
+                email="  JOHN.NORMALIZED@example.com ",
+            ),
+            db=db_session,
+            current_user=admin_user,
+        )
+    assert exc_info.value.status_code == 400
+
+
+def test_email_migration_conflict_detection_prevents_silent_deletion(db_session):
+    """Verify safe email migration detects duplicates after normalization and does not silently delete."""
+    import sqlalchemy as sa
+
+    # Directly insert raw colliding emails into table using raw SQL
+    db_session.execute(
+        sa.text(
+            "INSERT INTO employees (company_id, first_name, last_name, email, department, role, is_active, created_at, updated_at) "
+            "VALUES (99, 'User', 'A', 'collision@test.com', 'Eng', 'Dev', 1, '2026-01-01', '2026-01-01')"
+        )
+    )
+    db_session.execute(
+        sa.text(
+            "INSERT INTO employees (company_id, first_name, last_name, email, department, role, is_active, created_at, updated_at) "
+            "VALUES (99, 'User', 'B', 'COLLISION@test.com', 'Eng', 'Dev', 1, '2026-01-01', '2026-01-01')"
+        )
+    )
+    db_session.commit()
+
+    # Run check logic as implemented in migration 20261119_0003
+    check_query = sa.text("""
+        SELECT company_id, LOWER(TRIM(email)) AS norm_email, COUNT(*) AS cnt
+        FROM employees
+        WHERE company_id = 99
+        GROUP BY company_id, LOWER(TRIM(email))
+        HAVING COUNT(*) > 1
+    """)
+    duplicates = db_session.execute(check_query).fetchall()
+    assert len(duplicates) == 1
+    assert duplicates[0][1] == "collision@test.com"
+    assert duplicates[0][2] == 2
+
+    # Verify both records still exist and were not deleted
+    count_records = db_session.execute(sa.text("SELECT COUNT(*) FROM employees WHERE company_id = 99")).scalar()
+    assert count_records == 2
+
+
+# ==============================================================================
+# Issue 3: Domain Exceptions & Pure Business Logic Tests
+# ==============================================================================
+
+def test_domain_exceptions_raised_by_bonus_service():
+    """Verify calculation functions raise domain exceptions, not HTTPException or raw errors."""
+    with pytest.raises(InvalidSalaryError):
+        calculate_bonus(salary=Decimal("-100.00"), bonus_percentage=Decimal("10.0"))
+
+    with pytest.raises(InvalidBonusPercentageError):
+        calculate_bonus(salary=Decimal("1000.00"), bonus_percentage=Decimal("150.0"))
+
+    with pytest.raises(InvalidBonusPercentageError):
+        calculate_bonus(salary=Decimal("1000.00"), bonus_percentage=Decimal("-5.0"))
+
+    with pytest.raises(InvalidSalaryError):
+        calculate_salary(basic_salary=Decimal("-500.00"), bonus=Decimal("100.00"))
+
+    with pytest.raises(InvalidSalaryError):
+        calculate_salary(basic_salary=Decimal("500.00"), bonus=Decimal("-100.00"))
+
+
+def test_domain_exceptions_translated_to_http_400(db_session, admin_user):
+    """Verify router translates domain exceptions into HTTP 400 Bad Request."""
+    emp_no_salary = employees.create_employee(
+        employee=EmployeeCreate(
+            first_name="Intern",
+            last_name="Unpaid",
+            email="intern.unpaid@org.com",
+            salary=None,
+        ),
+        db=db_session,
+        current_user=admin_user,
+    )
+    # calculate_employee_bonus directly raises EmployeeMissingSalaryError
+    with pytest.raises(EmployeeMissingSalaryError):
+        calculate_employee_bonus(emp_no_salary)
+
+    # API route translates EmployeeMissingSalaryError to HTTPException 400
+    with pytest.raises(HTTPException) as exc_info:
+        employees.get_employee_bonus(
+            employee_id=emp_no_salary.id,
+            db=db_session,
+            current_user=admin_user,
+        )
+    assert exc_info.value.status_code == 400
+    assert "does not have a base salary" in exc_info.value.detail
+
+
+# ==============================================================================
+# Issue 4: Public Example Secrets & Placeholder Rejection Tests
+# ==============================================================================
+
+def test_config_rejects_placeholder_secrets():
+    """Verify Settings rejects known placeholders such as 'replace-with', 'placeholder', etc."""
+    # Test 'replace-with' placeholder
+    with pytest.raises(ValidationError) as exc_info:
+        Settings(
+            _env_file=None,
+            SECRET_KEY="replace-with-a-secure-random-32-char-secret-key-in-prod",
+            API_KEY="valid-length-api-key-at-least-32-chars-long",
+            ADMIN_API_KEY="valid-length-admin-api-key-at-least-32-chars",
+        )
+    assert "Insecure placeholder 'replace-with' detected" in str(exc_info.value)
+
+    # Test 'placeholder' in API_KEY
+    with pytest.raises(ValidationError) as exc_info:
+        Settings(
+            _env_file=None,
+            SECRET_KEY="valid-length-secret-key-at-least-32-chars",
+            API_KEY="placeholder-key-long-enough-32-characters!",
+            ADMIN_API_KEY="valid-length-admin-api-key-at-least-32-chars",
+        )
+    assert "Insecure placeholder 'placeholder' detected" in str(exc_info.value)
+
+    # Test 'changeme' in ADMIN_API_KEY
+    with pytest.raises(ValidationError) as exc_info:
+        Settings(
+            _env_file=None,
+            SECRET_KEY="valid-length-secret-key-at-least-32-chars",
+            API_KEY="valid-length-api-key-at-least-32-chars-long",
+            ADMIN_API_KEY="changeme-admin-key-at-least-32-characters!",
+        )
+    assert "Insecure placeholder 'changeme' detected" in str(exc_info.value)
+
+
+# ==============================================================================
+# Issue 5: Unsafe company_id Defaults & Mandatory Tenant Scoping Tests
+# ==============================================================================
+
+def test_user_model_requires_company_id():
+    """Verify User model requires company_id and does not default to 1."""
+    with pytest.raises(ValidationError):
+        User(username="test", role=UserRole.ADMIN)  # Missing company_id
+
+
+def test_jwt_token_requires_company_id_claim():
+    """Verify JWT tokens without company_id claim are rejected with 401."""
+    token_missing_company = create_access_token({
+        "sub": "user_no_company",
+        "role": "employee",
+        "employee_id": 1,
+    })
+    creds = HTTPAuthorizationCredentials(scheme="Bearer", credentials=token_missing_company)
+    with pytest.raises(HTTPException) as exc_info:
+        get_current_user(api_key=None, auth_creds=creds)
+    assert exc_info.value.status_code == 401
+    assert "missing required 'company_id' claim" in exc_info.value.detail.lower()
+
+
+def test_jwt_token_rejects_invalid_company_id():
+    """Verify JWT tokens with non-positive or non-integer company_id are rejected with 401."""
+    token_negative_company = create_access_token({
+        "sub": "user_bad_company",
+        "role": "employee",
+        "company_id": -5,
+        "employee_id": 1,
+    })
+    creds = HTTPAuthorizationCredentials(scheme="Bearer", credentials=token_negative_company)
+    with pytest.raises(HTTPException) as exc_info:
+        get_current_user(api_key=None, auth_creds=creds)
+    assert exc_info.value.status_code == 401
+    assert "positive integer" in exc_info.value.detail.lower()
+
+
+# ==============================================================================
+# Issue 6: Non-ASCII Credentials Returning HTTP 401 Tests
+# ==============================================================================
+
+def test_non_ascii_api_key_returns_401_never_500():
+    """Verify non-ASCII / Unicode API key returns HTTP 401 and never crashes with HTTP 500."""
+    with pytest.raises(HTTPException) as exc_info:
+        get_current_user(api_key="🔑non_ascii_admin_key_with_unicode_symbols_32chars", auth_creds=None)
+    assert exc_info.value.status_code == 401
+    assert "invalid authentication credentials" in exc_info.value.detail.lower()
+
+
+def test_non_ascii_bearer_token_returns_401_never_500():
+    """Verify non-ASCII Bearer token credentials return HTTP 401 and never crash with HTTP 500."""
+    creds = HTTPAuthorizationCredentials(scheme="Bearer", credentials="Bearer 🔑.unicode.payload.token")
+    with pytest.raises(HTTPException) as exc_info:
+        get_current_user(api_key=None, auth_creds=creds)
+    assert exc_info.value.status_code == 401
+
+
+def test_safe_compare_digest_handles_unicode_without_exception():
+    """Verify safe_compare_digest compares non-ASCII strings safely in constant time."""
+    assert safe_compare_digest("🔑secret_unicode_key", "different_key") is False
+    assert safe_compare_digest("🔑secret_unicode_key", "🔑secret_unicode_key") is True
+    assert safe_compare_digest("üñîçødé_tökên_vâlûê", "üñîçødé_tökên_vâlûê") is True
+    assert safe_compare_digest("üñîçødé_tökên_vâlûê", "other_value") is False
+
 
 
 

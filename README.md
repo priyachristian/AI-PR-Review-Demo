@@ -75,7 +75,22 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-### 4. Run the API Server
+### 4. Configure Environment Variables
+
+Copy `.env.example` to `.env` and configure secure, unique secrets (minimum 32 characters each):
+
+```bash
+cp .env.example .env
+```
+
+Generate secure production secrets in Python:
+```bash
+python -c "import secrets; print(secrets.token_urlsafe(48))"
+```
+
+> **Note:** The application validates `SECRET_KEY`, `API_KEY`, and `ADMIN_API_KEY` at startup. Known placeholders (e.g., `replace-with`, `placeholder`, `changeme`) are strictly rejected.
+
+### 5. Run the API Server
 
 ```bash
 uvicorn app.main:app --reload --host 127.0.0.1 --port 8000

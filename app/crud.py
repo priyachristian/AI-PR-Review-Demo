@@ -12,7 +12,7 @@ def _round(val: Decimal) -> Decimal:
     return val.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
 
 
-def get_employee(db: Session, employee_id: int, company_id: int = 1) -> Optional[models.Employee]:
+def get_employee(db: Session, employee_id: int, company_id: int) -> Optional[models.Employee]:
     """Retrieve an employee by primary key ID scoped to the tenant company_id."""
     return (
         db.query(models.Employee)
@@ -24,7 +24,7 @@ def get_employee(db: Session, employee_id: int, company_id: int = 1) -> Optional
     )
 
 
-def get_employee_by_email(db: Session, email: str, company_id: int = 1) -> Optional[models.Employee]:
+def get_employee_by_email(db: Session, email: str, company_id: int) -> Optional[models.Employee]:
     """Retrieve an employee by email address scoped to the tenant company_id."""
     return (
         db.query(models.Employee)
@@ -38,7 +38,7 @@ def get_employee_by_email(db: Session, email: str, company_id: int = 1) -> Optio
 
 def get_employees(
     db: Session,
-    company_id: int = 1,
+    company_id: int,
     skip: int = 0,
     limit: int = 100,
     department: Optional[str] = None,
@@ -89,7 +89,7 @@ def get_employees(
 def create_employee(
     db: Session,
     employee: schemas.EmployeeCreate,
-    company_id: int = 1,
+    company_id: int,
 ) -> models.Employee:
     """Create a new employee record scoped to tenant company_id, catching unique constraint violations."""
     db_employee = models.Employee(
@@ -144,7 +144,7 @@ def delete_employee(db: Session, db_employee: models.Employee) -> None:
     db.commit()
 
 
-def get_company_payroll_report(db: Session, company_id: int = 1) -> schemas.CompanyPayrollReport:
+def get_company_payroll_report(db: Session, company_id: int) -> schemas.CompanyPayrollReport:
     """Compute aggregate payroll and department statistics scoped to tenant."""
     employees = db.query(models.Employee).filter(models.Employee.company_id == company_id).all()
 
@@ -196,4 +196,3 @@ def get_company_payroll_report(db: Session, company_id: int = 1) -> schemas.Comp
         average_salary=_round(company_avg),
         departments=dept_summaries,
     )
-
