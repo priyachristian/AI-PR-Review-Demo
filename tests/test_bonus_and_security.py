@@ -532,3 +532,86 @@ def test_payroll_report_forbidden_for_non_admin(db_session, standard_employee_us
     assert exc_info.value.status_code == 403
 
 
+def test_employee_search(db_session, admin_user):
+    """Verify searching employees across first name, last name, and email."""
+    employees.create_employee(
+        employee=EmployeeCreate(
+            first_name="Leonardo",
+            last_name="DaVinci",
+            email="leonardo.davinci@renaissance.org",
+            department="R&D",
+            salary=Decimal("150000.00"),
+        ),
+        db=db_session,
+        current_user=admin_user,
+    )
+    employees.create_employee(
+        employee=EmployeeCreate(
+            first_name="Michelangelo",
+            last_name="Buonarroti",
+            email="michelangelo@renaissance.org",
+            department="Sculpture",
+            salary=Decimal("140000.00"),
+        ),
+        db=db_session,
+        current_user=admin_user,
+    )
+
+    # Search by partial first name
+    res_first = employees.list_employees(search="Leon", db=db_session, current_user=admin_user)
+    assert len(res_first) == 1
+    assert res_first[0].first_name == "Leonardo"
+
+    # Search by partial last name
+    res_last = employees.list_employees(search="Buon", db=db_session, current_user=admin_user)
+    assert len(res_last) == 1
+    assert res_last[0].last_name == "Buonarroti"
+
+    # Search by email domain
+    res_email = employees.list_employees(search="renaissance.org", db=db_session, current_user=admin_user)
+    assert len(res_email) == 2
+
+
+def test_employee_sorting(db_session, admin_user):
+    """Verify sorting employees by salary ascending and descending."""
+    employees.create_employee(
+        employee=EmployeeCreate(
+            first_name="Junior",
+            last_name="Dev",
+            email="junior@code.org",
+            salary=Decimal("60000.00"),
+        ),
+        db=db_session,
+        current_user=admin_user,
+    )
+    employees.create_employee(
+        employee=EmployeeCreate(
+            first_name="Senior",
+            last_name="Dev",
+            email="senior@code.org",
+            salary=Decimal("120000.00"),
+        ),
+        db=db_session,
+        current_user=admin_user,
+    )
+
+    # Ascending sort by salary
+    asc_res = employees.list_employees(
+        sort_by="salary",
+        order="asc",
+        db=db_session,
+        current_user=admin_user,
+    )
+    assert asc_res[0].salary <= asc_res[-1].salary
+
+    # Descending sort by salary
+    desc_res = employees.list_employees(
+        sort_by="salary",
+        order="desc",
+        db=db_session,
+        current_user=admin_user,
+    )
+    assert desc_res[0].salary >= desc_res[-1].salary
+
+
+

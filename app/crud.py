@@ -2,6 +2,7 @@ from collections import defaultdict
 from decimal import Decimal, ROUND_HALF_UP
 from typing import List, Optional
 from fastapi import HTTPException, status
+from sqlalchemy import or_
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from app import models, schemas
@@ -44,8 +45,11 @@ def get_employees(
     is_active: Optional[bool] = None,
     min_salary: Optional[Decimal] = None,
     max_salary: Optional[Decimal] = None,
+    search: Optional[str] = None,
+    sort_by: str = "id",
+    order: str = "asc",
 ) -> List[models.Employee]:
-    """Retrieve a list of employees scoped to tenant with pagination and optional filters."""
+    """Retrieve a list of employees scoped to tenant with pagination, filters, search, and sorting."""
     query = db.query(models.Employee).filter(models.Employee.company_id == company_id)
     if department:
         query = query.filter(models.Employee.department.ilike(f"%{department.strip()}%"))
@@ -55,6 +59,30 @@ def get_employees(
         query = query.filter(models.Employee.salary >= min_salary)
     if max_salary is not None:
         query = query.filter(models.Employee.salary <= max_salary)
+    if search and search.strip():
+        term = f"%{search.strip()}%"
+        query = query.filter(
+            or_(
+                models.Employee.first_name.ilike(term),
+                models.Employee.last_name.ilike(term),
+                models.Employee.email.ilike(term),
+            )
+        )
+
+    # Validate and apply sorting
+    sort_column_map = {
+        "id": models.Employee.id,
+        "first_name": models.Employee.first_name,
+        "last_name": models.Employee.last_name,
+        "salary": models.Employee.salary,
+        "created_at": models.Employee.created_at,
+    }
+    sort_col = sort_column_map.get(sort_by, models.Employee.id)
+    if order == "desc":
+        query = query.order_by(sort_col.desc())
+    else:
+        query = query.order_by(sort_col.asc())
+
     return query.offset(skip).limit(limit).all()
 
 

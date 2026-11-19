@@ -55,10 +55,13 @@ def list_employees(
     is_active: Optional[bool] = Query(None, description="Filter by active status"),
     min_salary: Optional[Decimal] = Query(None, ge=0, description="Filter by minimum salary"),
     max_salary: Optional[Decimal] = Query(None, ge=0, description="Filter by maximum salary"),
+    search: Optional[str] = Query(None, min_length=1, max_length=100, description="Search by name or email"),
+    sort_by: str = Query("id", pattern="^(id|first_name|last_name|salary|created_at)$", description="Field to sort by"),
+    order: str = Query("asc", pattern="^(asc|desc)$", description="Sort order (asc or desc)"),
     db: Session = Depends(get_db),
     current_user: security.User = Depends(security.require_authenticated),
 ):
-    """Retrieve employees scoped to the authenticated tenant organization."""
+    """Retrieve employees scoped to the authenticated tenant organization with search and sorting."""
     return crud.get_employees(
         db=db,
         company_id=current_user.company_id,
@@ -68,6 +71,9 @@ def list_employees(
         is_active=_unwrap(is_active, None),
         min_salary=_unwrap(min_salary, None),
         max_salary=_unwrap(max_salary, None),
+        search=_unwrap(search, None),
+        sort_by=_unwrap(sort_by, "id"),
+        order=_unwrap(order, "asc"),
     )
 
 

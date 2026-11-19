@@ -108,7 +108,7 @@ FastAPI provides automatic interactive Swagger UI and ReDoc documentation:
 | Method | Endpoint | Query Parameters | Description | Status Code | Required Role |
 |---|---|---|---|---|---|
 | `POST` | `/api/v1/employees/` | – | Create a new employee | `201 Created` / `400` / `409` | `admin` |
-| `GET` | `/api/v1/employees/` | `skip`, `limit`, `department`, `is_active`, `min_salary`, `max_salary` | List employees with filters & salary range | `200 OK` | `authenticated` |
+| `GET` | `/api/v1/employees/` | `skip`, `limit`, `department`, `is_active`, `min_salary`, `max_salary`, `search`, `sort_by`, `order` | List employees with filters, search & sorting | `200 OK` | `authenticated` |
 | `GET` | `/api/v1/employees/reports/payroll` | – | Executive department payroll analytics | `200 OK` | `admin` |
 | `GET` | `/api/v1/employees/{id}` | – | Get single employee by ID | `200 OK` / `404 Not Found` | `authenticated` (admin/owner) |
 | `GET` | `/api/v1/employees/{id}/bonus` | `bonus_percentage` (0-100) | Calculate employee bonus & total compensation | `200 OK` / `400` / `404` | `authenticated` (admin/owner) |
