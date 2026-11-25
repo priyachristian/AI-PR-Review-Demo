@@ -4,6 +4,7 @@ from typing import Annotated, Optional
 from fastapi import Depends, FastAPI, Path, Query
 from sqlalchemy.orm import Session
 
+from app.config import settings
 from app.database import Base, engine, get_db
 from app.routers import employees
 
