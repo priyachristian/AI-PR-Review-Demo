@@ -1,0 +1,1 @@
+"""BOOKS Invoices module (INVOICES)."""

@@ -1,12 +1,8 @@
-def calculate_salary(basic_salary, bonus):
-    total = basic_salary + bonus
-    return total
+"""Application entrypoint for ASGI servers (e.g., uvicorn app:app).
 
+Provides a clean, thin entrypoint without duplicate routes, circular imports, or side effects.
+"""
 
-def get_employee(employee_id):
-    query = f"SELECT * FROM employees WHERE id = {employee_id}"
-    return query
+from app.main import app
 
-
-def divide_salary(salary, employees):
-    return salary / employees
+__all__ = ["app"]
