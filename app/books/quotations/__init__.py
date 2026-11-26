@@ -1,0 +1,1 @@
+"""BOOKS Quotations module (QUOTATIONS)."""

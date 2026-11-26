@@ -75,7 +75,22 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-### 4. Run the API Server
+### 4. Configure Environment Variables
+
+Copy `.env.example` to `.env` and configure secure, unique secrets (minimum 32 characters each):
+
+```bash
+cp .env.example .env
+```
+
+Generate secure production secrets in Python:
+```bash
+python -c "import secrets; print(secrets.token_urlsafe(48))"
+```
+
+> **Note:** The application validates `SECRET_KEY`, `API_KEY`, and `ADMIN_API_KEY` at startup. Known placeholders (e.g., `replace-with`, `placeholder`, `changeme`) are strictly rejected.
+
+### 5. Run the API Server
 
 ```bash
 uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
@@ -103,15 +118,43 @@ FastAPI provides automatic interactive Swagger UI and ReDoc documentation:
 | `GET` | `/` | Root info & service metadata | `200 OK` |
 | `GET` | `/health` | Service health status | `200 OK` |
 
-### Employee CRUD
+### Employee CRUD & Analytics
 
-| Method | Endpoint | Query Parameters | Description | Status Code |
-|---|---|---|---|---|
-| `POST` | `/api/v1/employees/` | – | Create a new employee | `201 Created` |
-| `GET` | `/api/v1/employees/` | `skip`, `limit`, `department`, `is_active` | List employees with filters | `200 OK` |
-| `GET` | `/api/v1/employees/{id}` | – | Get single employee by ID | `200 OK` / `404 Not Found` |
-| `PUT` | `/api/v1/employees/{id}` | – | Update employee details | `200 OK` / `400 Bad Request` / `404 Not Found` |
-| `DELETE` | `/api/v1/employees/{id}` | – | Delete employee | `204 No Content` / `404 Not Found` |
+| Method | Endpoint | Query Parameters | Description | Status Code | Required Role |
+|---|---|---|---|---|---|
+| `POST` | `/api/v1/employees/` | – | Create a new employee | `201 Created` / `400` / `409` | `admin` |
+| `GET` | `/api/v1/employees/` | `skip`, `limit`, `department`, `is_active`, `min_salary`, `max_salary`, `search`, `sort_by`, `order` | List employees with filters, search & sorting | `200 OK` | `authenticated` |
+| `GET` | `/api/v1/employees/reports/payroll` | – | Executive department payroll analytics | `200 OK` | `admin` |
+| `GET` | `/api/v1/employees/{id}` | – | Get single employee by ID | `200 OK` / `404 Not Found` | `authenticated` (admin/owner) |
+| `GET` | `/api/v1/employees/{id}/bonus` | `bonus_percentage` (0-100) | Calculate employee bonus & total compensation | `200 OK` / `400` / `404` | `authenticated` (admin/owner) |
+| `GET` | `/bonus/{id}` | `bonus_percentage` (0-100) | Alias for bonus calculation | `200 OK` / `400` / `404` | `authenticated` (admin/owner) |
+| `PUT` | `/api/v1/employees/{id}` | – | Update employee details | `200 OK` / `400` / `404` / `409` | `admin` |
+| `DELETE` | `/api/v1/employees/{id}` | – | Delete employee | `204 No Content` / `404 Not Found` | `admin` |
+
+### Authentication & Tenant Scoping
+
+All endpoints enforce tenant isolation via `company_id` bound to the caller's authenticated principal. Authentication can be provided via either:
+
+1. **Header API Key**:
+   - Admin: `X-API-Key: <ADMIN_API_KEY>`
+   - Employee: `X-API-Key: <API_KEY>`
+2. **Bearer Token (JWT)**:
+   - `Authorization: Bearer <signed_jwt>`
+   - Claims: `{"sub": "<username>", "role": "admin|employee", "company_id": <int>, "employee_id": <int>}`
+
+---
+
+### Database Migrations (Alembic)
+
+Database schema migrations are managed via Alembic:
+
+```bash
+# Apply pending migrations to database
+alembic upgrade head
+
+# Check current revision status
+alembic current
+```
 
 ### Sample Payload
 
