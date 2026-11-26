@@ -4,7 +4,14 @@ from typing import Annotated, Optional
 from fastapi import Depends, FastAPI, Path, Query
 from sqlalchemy.orm import Session
 
+from app import schemas, security
+from app.books.invoices import router as books_invoices_router
+from app.books.payments_received import router as books_payments_received_router
+from app.books.quotations import router as books_quotations_router
 from app.config import settings
+from app.crm.contacts import router as crm_contacts_router
+from app.crm.leads import router as crm_leads_router
+from app.crm.opportunities_deals import router as crm_opportunities_deals_router
 from app.database import Base, engine, get_db
 from app.routers import employees
 
@@ -23,8 +30,14 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# Register versioned API router
+# Register versioned API routers (Employee Management, BOOKS, and CRM kept cleanly separated)
 app.include_router(employees.router, prefix="/api/v1")
+app.include_router(books_invoices_router.router, prefix="/api/v1")
+app.include_router(books_payments_received_router.router, prefix="/api/v1")
+app.include_router(books_quotations_router.router, prefix="/api/v1")
+app.include_router(crm_leads_router.router, prefix="/api/v1")
+app.include_router(crm_contacts_router.router, prefix="/api/v1")
+app.include_router(crm_opportunities_deals_router.router, prefix="/api/v1")
 
 
 @app.get("/", tags=["Health"])
